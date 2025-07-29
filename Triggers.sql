@@ -1,109 +1,36 @@
--- Trigger to update the inventory when an order is placed 
-CREATE OR REPLACE TRIGGER UPDATE_INVENTORY BEFORE
-    INSERT ON ORDERS
-    FOR EACH ROW
+CREATE OR REPLACE FUNCTION update_inventory()
+RETURNS TRIGGER AS $$
 DECLARE
-    CURSOR ITEMS IS
-    SELECT
-        CI.P_ID,
-        CI.QTY
-    FROM
-        CART_ITEMS CI,
-        CART
-    WHERE
-        CI.CART_ID = CART.CART_ID
-        AND CART.BUYER_ID = :NEW.BUYER_ID;
-
-    THIS_ITEM  ITEMS%ROWTYPE;
-    NEW_QTY    NUMBER := 0;
-    OLD_QTY    NUMBER;
+    this_item RECORD;
+    old_qty INTEGER;
+    new_qty INTEGER;
 BEGIN
-    OPEN ITEMS;
+    FOR this_item IN
+        SELECT ci.p_id, ci.qty
+        FROM cart_items ci
+        JOIN cart c ON ci.cart_id = c.cart_id
+        WHERE c.buyer_id = NEW.buyer_id
     LOOP
-        FETCH ITEMS INTO THIS_ITEM;
-        EXIT WHEN ( ITEMS%NOTFOUND );
-        SELECT
-            QTY
-        INTO OLD_QTY
-        FROM
-            PRODUCT
-        WHERE
-            P_ID = THIS_ITEM.P_ID;
+        SELECT qty INTO old_qty
+        FROM product
+        WHERE p_id = this_item.p_id;
 
-        NEW_QTY := OLD_QTY - THIS_ITEM.QTY;
-        IF NEW_QTY < 0 THEN
-            RAISE_APPLICATION_ERROR(
-                                   -20000,
-                                   'Not enough stock'
-            );
+        new_qty := old_qty - this_item.qty;
+
+        IF new_qty < 0 THEN
+            RAISE EXCEPTION 'Not enough stock for product %', this_item.p_id;
         END IF;
-        UPDATE PRODUCT
-        SET
-            QTY = NEW_QTY
-        WHERE
-            P_ID = THIS_ITEM.P_ID;
 
+        UPDATE product
+        SET qty = new_qty
+        WHERE p_id = this_item.p_id;
     END LOOP;
 
-    CLOSE ITEMS;
+    RETURN NEW;
 END;
+$$ LANGUAGE plpgsql;
 
--- Trigger to reset a user's cart after an order is placed
-CREATE OR REPLACE TRIGGER EMPTY_CART AFTER
-    INSERT ON ORDERS
-    FOR EACH ROW
-DECLARE
-    CID CART.CART_ID%TYPE;
-BEGIN
-    SELECT
-        CART_ID
-    INTO CID
-    FROM
-        CART
-    WHERE
-        BUYER_ID = :NEW.BUYER_ID;
-
-    DELETE FROM CART_ITEMS
-    WHERE
-        CART_ID = CID;
-
-    UPDATE CART
-    SET
-        CART.TOTAL_QTY = 0,
-        CART.TOTAL_PRICE = 0
-    WHERE
-        CART_ID = CID;
-
-END;
-
-
--- Trigger to update total quantity and total price of the cart when an item is added
-CREATE OR REPLACE TRIGGER UPDATE_CART_DETAILS AFTER
-    INSERT ON CART_ITEM S
-    FOR EACH ROW
-DECLARE
-    ITEM_PRICE   PRODUCT.PRICE%TYPE;
-    ADDED_PRICE  PRODUCT.PRICE%TYPE;
-BEGIN
-    UPDATE CART
-    SET
-        TOTAL_QTY = :NEW.QTY + TOTAL_QTY
-    WHERE
-        CART_ID = :NEW.CART_ID;
-
-    SELECT
-        PRICE
-    INTO ITEM_PRICE
-    FROM
-        PRODUCT
-    WHERE
-        P_ID = :NEW.P_ID;
-
-    ADDED_PRICE := ITEM_PRICE * :NEW.QTY;
-    UPDATE CART
-    SET
-        TOTAL_PRICE = TOTAL_PRICE + ADDED_PRICE
-    WHERE
-        CART_ID = :NEW.CART_ID;
-
-END;
+CREATE TRIGGER trg_update_inventory
+BEFORE INSERT ON orders
+FOR EACH ROW
+EXECUTE FUNCTION update_inventory();
